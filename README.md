@@ -8,6 +8,15 @@ A recurring billing engine for SaaS products: plans with seats and metered add-o
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Try it live
+
+| | |
+|---|---|
+| API reference | https://akibullah.github.io/saas-subscription-billing/ — Swagger UI built from the exported OpenAPI document (static; no backend behind it) |
+| Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/saas-subscription-billing?quickstart=1) — starts API + scheduler + PostgreSQL with `docker compose`, runs `billing seed` (plans, coupons, five customers) and one `billing run`; open forwarded port 8000 at `/docs` with `X-API-Key: change-me`. |
+| One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/saas-subscription-billing) — `render.yaml` provisions the web service and a free PostgreSQL; the container migrates and seeds on start, `API_KEY` is generated (read it from the service's environment tab). |
+| Local | `docker compose up` (see Quick Start) |
+
 ## Why this exists
 
 Every SaaS product I have helped ship eventually hit the same wall: the first "billing" is a cron job that charges a card once a month, and it falls apart the moment a customer adds three seats on the 17th, asks for a refund of the unused half, or has a card that bounces for a week. Stripe Billing solves this for USD merchants; teams billing in BDT through bKash agreements or a local card acquirer mostly do not have that option and end up re-inventing proration in a spreadsheet. This repository is the engine I would want underneath such a product: integer money, a real subscription state machine, invoices built from line items so every paisa is explainable, and a billing run that can be re-executed for the same instant without double-charging anyone.

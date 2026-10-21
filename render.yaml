@@ -1,0 +1,40 @@
+# Render blueprint: API (runs Alembic migrations and seeds demo data on start) + managed PostgreSQL.
+# The hourly billing scheduler from docker-compose is not provisioned (free plan); trigger runs
+# with POST /v1/billing/run or a Render cron job.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: saas-subscription-billing
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PAYMENT_GATEWAY
+        value: mock
+      - key: DEFAULT_CURRENCY
+        value: BDT
+      - key: VAT_RATE_BPS
+        value: "1500"
+      - key: SEED_DEMO_ON_START
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: saas-billing-db
+          property: connectionString
+      - key: API_KEY
+        generateValue: true
+
+databases:
+  - name: saas-billing-db
+    plan: free
+    databaseName: billing
+    user: billing

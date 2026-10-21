@@ -2,7 +2,7 @@
 VENV ?= .venv
 PY := $(VENV)/bin/python
 
-.PHONY: help venv install dev test cov lint fmt migrate simulate docker-up docker-down clean
+.PHONY: help venv install dev test cov lint fmt migrate simulate openapi docker-up docker-down clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -36,6 +36,9 @@ lint: ## Ruff check + format check
 fmt: ## Format + autofix
 	$(VENV)/bin/ruff format saas_billing tests scripts alembic
 	$(VENV)/bin/ruff check --fix saas_billing tests scripts alembic
+
+openapi: ## Export the OpenAPI document to openapi.json
+	$(PY) scripts/export_openapi.py
 
 docker-up: ## api + postgres
 	docker compose up --build -d

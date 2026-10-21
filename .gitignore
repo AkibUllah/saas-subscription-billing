@@ -28,3 +28,6 @@ htmlcov/
 
 # Alembic autogenerate scratch
 *.db-journal
+
+# Exported schema (built by the Pages workflow / make openapi)
+/openapi.json

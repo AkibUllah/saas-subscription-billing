@@ -21,4 +21,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
 
 # Migrations run first so a fresh PostgreSQL volume is ready before the API starts.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn saas_billing.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
+# SEED_DEMO_ON_START=true also loads the idempotent demo catalogue (used by the Render blueprint).
+CMD ["sh", "-c", "alembic upgrade head && if [ \"$SEED_DEMO_ON_START\" = true ]; then billing seed; fi && uvicorn saas_billing.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers"]
