@@ -1,0 +1,45 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://billing:billing@db:5432/billing
+      API_KEY: ${API_KEY:-change-me}
+      PAYMENT_GATEWAY: mock
+      VAT_RATE_BPS: "1500"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Nightly billing run. Replace the sleep loop with cron/systemd timers in production.
+  scheduler:
+    build: .
+    command: ["sh", "-c", "while true; do billing run; sleep 3600; done"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://billing:billing@db:5432/billing
+      PAYMENT_GATEWAY: mock
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+      POSTGRES_DB: billing
+    volumes:
+      - billing-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing -d billing"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  billing-pgdata:
