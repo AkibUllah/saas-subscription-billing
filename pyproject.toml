@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saas-subscription-billing"
+version = "0.1.0"
+description = "Recurring billing engine for SaaS: plans, seats, trials, coupons, proration, invoicing, dunning and MRR metrics"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Akib Jafor" }]
+requires-python = ">=3.10"
+keywords = ["billing", "subscriptions", "saas", "invoicing", "proration", "dunning", "fastapi", "sqlalchemy"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Framework :: FastAPI",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "fastapi>=0.110,<1.0",
+  "uvicorn[standard]>=0.27",
+  "sqlalchemy>=2.0,<3.0",
+  "alembic>=1.13",
+  "pydantic[email]>=2.5,<3.0",
+  "pydantic-settings>=2.1",
+  "httpx>=0.26",
+  "jinja2>=3.1",
+  "typer>=0.12",
+  "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.3",
+]
+
+[project.scripts]
+billing = "saas_billing.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["saas_billing*"]
+
+[tool.setuptools.package-data]
+saas_billing = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+  "error::DeprecationWarning:saas_billing.*",
+  "ignore:Using `httpx` with `starlette.testclient`",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["saas_billing"]
