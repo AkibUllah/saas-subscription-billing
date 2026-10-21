@@ -35,6 +35,16 @@ class Settings(BaseSettings):
         parse_schedule(value)
         return value
 
+    @field_validator("database_url")
+    @classmethod
+    def _normalise_database_url(cls, value: str) -> str:
+        """Managed Postgres (Render, Heroku) hands out ``postgres://`` or ``postgresql://`` URLs;
+        SQLAlchemy needs the installed psycopg 3 driver spelled out."""
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+psycopg://" + value[len(prefix) :]
+        return value
+
     @property
     def dunning_schedule(self) -> tuple[int, ...]:
         return parse_schedule(self.dunning_schedule_days)
