@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invoice {{ invoice.number }}</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2933; margin: 0; background: #f5f7fa; }
+  .sheet { max-width: 800px; margin: 32px auto; background: #fff; padding: 40px 48px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .muted { color: #6b7785; }
+  .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .status.paid { background: #e3f6ea; color: #137a3a; }
+  .status.open { background: #fff4d6; color: #8a5a00; }
+  .status.uncollectible, .status.void { background: #fde2e1; color: #a12622; }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e4e8ed; vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #6b7785; }
+  td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tfoot td { border-bottom: none; }
+  tfoot tr.total td { font-weight: 700; font-size: 16px; border-top: 2px solid #1f2933; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .attempts { margin-top: 32px; font-size: 13px; }
+  @media print { body { background: #fff; } .sheet { box-shadow: none; margin: 0; } }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <div>
+      <h1>Invoice {{ invoice.number }}</h1>
+      <div class="muted">Issued {{ invoice.issued_at.strftime("%d %b %Y") }} · Due {{ invoice.due_at.strftime("%d %b %Y") }}</div>
+    </div>
+    <span class="status {{ invoice.status.value }}">{{ invoice.status.value }}</span>
+  </header>
+
+  <div class="meta">
+    <div>
+      <div class="muted">Billed to</div>
+      <strong>{{ customer.name }}</strong><br>
+      {{ customer.email }}<br>
+      Customer {{ customer.id }}
+    </div>
+    <div>
+      <div class="muted">Service period</div>
+      {{ invoice.period_start.strftime("%d %b %Y") }} – {{ invoice.period_end.strftime("%d %b %Y") }}<br>
+      {% if invoice.subscription_id %}Subscription {{ invoice.subscription_id }}{% endif %}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Description</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Amount</th></tr>
+    </thead>
+    <tbody>
+      {% for line in invoice.lines %}
+      <tr>
+        <td>{{ line.description }}<div class="muted">{{ line.type.value.replace("_", " ") }}</div></td>
+        <td class="num">{{ line.quantity }}</td>
+        <td class="num">{{ line.unit_amount_minor | money(invoice.currency) }}</td>
+        <td class="num">{{ line.amount_minor | money(invoice.currency) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr><td colspan="3" class="num">Subtotal</td><td class="num">{{ invoice.subtotal_minor | money(invoice.currency) }}</td></tr>
+      {% if invoice.discount_minor %}
+      <tr><td colspan="3" class="num">Discount{% if invoice.coupon_code %} ({{ invoice.coupon_code }}){% endif %}</td><td class="num">-{{ invoice.discount_minor | money(invoice.currency) }}</td></tr>
+      {% endif %}
+      <tr><td colspan="3" class="num">VAT {{ vat_percent }}%</td><td class="num">{{ invoice.tax_minor | money(invoice.currency) }}</td></tr>
+      {% if invoice.credit_applied_minor %}
+      <tr><td colspan="3" class="num">Credit applied</td><td class="num">-{{ invoice.credit_applied_minor | money(invoice.currency) }}</td></tr>
+      {% endif %}
+      <tr class="total"><td colspan="3" class="num">Total</td><td class="num">{{ invoice.total_minor | money(invoice.currency) }}</td></tr>
+      <tr><td colspan="3" class="num">Paid</td><td class="num">{{ invoice.amount_paid_minor | money(invoice.currency) }}</td></tr>
+      <tr><td colspan="3" class="num">Amount due</td><td class="num">{{ invoice.amount_due_minor | money(invoice.currency) }}</td></tr>
+    </tfoot>
+  </table>
+
+  {% if invoice.payment_attempts %}
+  <div class="attempts">
+    <div class="muted">Payment attempts</div>
+    <ul>
+      {% for attempt in invoice.payment_attempts %}
+      <li>{{ attempt.attempted_at.strftime("%d %b %Y %H:%M") }} · {{ attempt.gateway }} ·
+        {% if attempt.succeeded %}succeeded ({{ attempt.reference }}){% else %}failed ({{ attempt.failure_code }}){% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>
