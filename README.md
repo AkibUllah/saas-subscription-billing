@@ -4,6 +4,8 @@
 A recurring billing engine for SaaS products: plans with seats and metered add-ons, trials, coupons, mid-cycle changes with exact proration, period invoicing with VAT, card dunning, signed webhooks and MRR/churn metrics, all driven by an injectable clock so any month can be billed and replayed deterministically.
 
 [![CI](https://github.com/AkibUllah/saas-subscription-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/AkibUllah/saas-subscription-billing/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AkibUllah/saas-subscription-billing/actions/workflows/codeql.yml/badge.svg)](https://github.com/AkibUllah/saas-subscription-billing/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/AkibUllah/saas-subscription-billing)](https://github.com/AkibUllah/saas-subscription-billing/releases)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -16,6 +18,16 @@ A recurring billing engine for SaaS products: plans with seats and metered add-o
 | Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/saas-subscription-billing?quickstart=1) — starts API + scheduler + PostgreSQL with `docker compose`, runs `billing seed` (plans, coupons, five customers) and one `billing run`; open forwarded port 8000 at `/docs` with `X-API-Key: change-me`. |
 | One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/saas-subscription-billing) — `render.yaml` provisions the web service and a free PostgreSQL; the container migrates and seeds on start, `API_KEY` is generated (read it from the service's environment tab). |
 | Local | `docker compose up` (see Quick Start) |
+
+## Screenshots
+
+![Swagger UI API reference](docs/images/api-reference.png)
+
+Live API reference on GitHub Pages: customers, plans, subscriptions, invoices, billing runs and metrics.
+
+![billing simulation output](docs/images/terminal-demo.png)
+
+A real run of `make simulate`: three months of daily billing runs for five customers with trials, prorated upgrades, coupons, a declining card going through dunning, and the resulting MRR/churn table and invoices.
 
 ## Why this exists
 
@@ -209,7 +221,7 @@ saas_billing/
 └── templates/invoice.html
 alembic/                    # env.py + versions/0001_initial_schema.py
 scripts/simulate.py         # the 3-month simulation above
-tests/                      # 76 tests, in-memory SQLite, FixedClock, MockGateway, MockTransport
+tests/                      # 81 tests, in-memory SQLite, FixedClock, MockGateway, MockTransport
 ```
 
 ## Testing
@@ -224,11 +236,11 @@ Covered: money rounding and month arithmetic (31 Jan + 1 month, leap years); pro
 
 ## Roadmap
 
-- Row-level locking (`SELECT … FOR UPDATE SKIP LOCKED`) so several billing workers can share one PostgreSQL queue
-- Per-customer tax profiles (VAT registration number, reverse charge) instead of one global rate
-- Refunds as first-class objects with gateway calls, instead of credit-balance adjustments only
-- Scheduled pauses/resumes and scheduled plan changes at period end
-- PDF invoices (the HTML template is print-ready; wiring WeasyPrint is the remaining step)
+- [ ] Row-level locking (`SELECT … FOR UPDATE SKIP LOCKED`) so several billing workers can share one PostgreSQL queue (#1)
+- [ ] Per-customer tax profiles (VAT registration number, reverse charge) instead of one global rate (#2)
+- [ ] Refunds as first-class objects with gateway calls, instead of credit-balance adjustments only (#3)
+- [ ] Scheduled pauses/resumes and scheduled plan changes at period end (#4)
+- [ ] PDF invoices (the HTML template is print-ready; wiring WeasyPrint is the remaining step) (#5)
 
 ## License
 
