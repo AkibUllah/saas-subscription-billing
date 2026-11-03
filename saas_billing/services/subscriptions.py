@@ -210,8 +210,8 @@ def _line(
     )
 
 
-def _require_changeable(sub: Subscription) -> None:
-    if sub.status not in CHANGEABLE:
+def _require_changeable(sub: Subscription, allowed: frozenset[S] = CHANGEABLE) -> None:
+    if sub.status not in allowed:
         raise DomainError(
             f"subscription is {sub.status.value}; changes are not allowed",
             code="subscription_not_changeable",
@@ -279,9 +279,15 @@ def change_seats(
     return None
 
 
-def validate_plan_change(sub: Subscription, new_plan: Plan, seats: int | None) -> int:
+def validate_plan_change(
+    sub: Subscription,
+    new_plan: Plan,
+    seats: int | None,
+    *,
+    allowed: frozenset[S] = CHANGEABLE,
+) -> int:
     """Check that `sub` may move to `new_plan`; return the seat count it would end up with."""
-    _require_changeable(sub)
+    _require_changeable(sub, allowed)
     if not new_plan.active:
         raise DomainError(f"plan {new_plan.code} is not active", code="plan_inactive")
     if new_plan.currency != sub.plan.currency:

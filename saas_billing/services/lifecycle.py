@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from saas_billing.core.states import SubscriptionStatus, assert_transition
-from saas_billing.models import Subscription, SubscriptionEvent
+from saas_billing.models import ScheduledChange, Subscription, SubscriptionEvent
 from saas_billing.services import webhooks
 from saas_billing.services.webhooks import iso
 
@@ -23,6 +23,20 @@ def subscription_payload(sub: Subscription) -> dict:
         "current_period_start": iso(sub.current_period_start),
         "current_period_end": iso(sub.current_period_end),
         "cancel_at_period_end": sub.cancel_at_period_end,
+    }
+
+
+def scheduled_change_payload(change: ScheduledChange) -> dict:
+    return {
+        "id": change.id,
+        "subscription_id": change.subscription_id,
+        "action": change.action.value,
+        "status": change.status.value,
+        "plan_id": change.plan_id,
+        "seats": change.seats,
+        "at_period_end": change.at_period_end,
+        "effective_at": iso(change.effective_at),
+        "failure_reason": change.failure_reason,
     }
 
 
