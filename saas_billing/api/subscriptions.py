@@ -6,19 +6,23 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from saas_billing.api.deps import get_ctx, get_db, now
+from saas_billing.clock import ensure_utc
 from saas_billing.core.states import SubscriptionStatus
+from saas_billing.models import ScheduledChangeStatus
 from saas_billing.schemas import (
     CancelRequest,
     ChangePlanRequest,
     ChangeResult,
     ChangeSeatsRequest,
+    ScheduledChangeCreate,
+    ScheduledChangeOut,
     SubscriptionCreate,
     SubscriptionDetail,
     SubscriptionOut,
     UsageCreate,
     UsageOut,
 )
-from saas_billing.services import customers, plans, subscriptions, webhooks
+from saas_billing.services import customers, plans, scheduled_changes, subscriptions, webhooks
 from saas_billing.services.context import BillingContext
 
 router = APIRouter(prefix="/v1/subscriptions", tags=["subscriptions"])
@@ -139,3 +143,58 @@ def record_usage(
         recorded_at=body.recorded_at,
         idempotency_key=body.idempotency_key,
     )
+
+
+@router.post(
+    "/{subscription_id}/scheduled-changes", response_model=ScheduledChangeOut, status_code=201
+)
+def schedule_change(
+    subscription_id: str,
+    body: ScheduledChangeCreate,
+    db: Session = Depends(get_db),
+    ctx: BillingContext = Depends(get_ctx),
+    at: datetime = Depends(now),
+):
+    """Queue a pause, resume, plan or seat change; the billing run applies it when due."""
+    sub = subscriptions.get_subscription(db, subscription_id)
+    plan = plans.get_plan(db, body.plan_id) if body.plan_id else None
+    change = scheduled_changes.schedule_change(
+        db,
+        sub,
+        body.action,
+        at,
+        effective_at=ensure_utc(body.effective_at) if body.effective_at else None,
+        plan=plan,
+        seats=body.seats,
+    )
+    webhooks.dispatch(db, ctx.http, at)
+    return change
+
+
+@router.get("/{subscription_id}/scheduled-changes", response_model=list[ScheduledChangeOut])
+def list_scheduled_changes(
+    subscription_id: str,
+    db: Session = Depends(get_db),
+    status: ScheduledChangeStatus | None = None,
+):
+    sub = subscriptions.get_subscription(db, subscription_id)
+    return scheduled_changes.list_changes(db, sub, status)
+
+
+@router.delete(
+    "/{subscription_id}/scheduled-changes/{change_id}", response_model=ScheduledChangeOut
+)
+def cancel_scheduled_change(
+    subscription_id: str,
+    change_id: str,
+    db: Session = Depends(get_db),
+    ctx: BillingContext = Depends(get_ctx),
+    at: datetime = Depends(now),
+):
+    """Cancel a pending change. The row stays, with status `canceled`, for the audit trail."""
+    sub = subscriptions.get_subscription(db, subscription_id)
+    change = scheduled_changes.cancel_change(
+        db, scheduled_changes.get_change(db, sub, change_id), at
+    )
+    webhooks.dispatch(db, ctx.http, at)
+    return change
