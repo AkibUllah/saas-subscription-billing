@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.orm import Session
 
-from saas_billing.core.states import SubscriptionStatus
+from saas_billing.core.states import BILLABLE, InvalidTransition, SubscriptionStatus
 from saas_billing.models import (
     Plan,
     ScheduledAction,
@@ -20,7 +20,8 @@ from saas_billing.models import (
     ScheduledChangeStatus,
     Subscription,
 )
-from saas_billing.services import webhooks
+from saas_billing.services import subscriptions, webhooks
+from saas_billing.services.context import BillingContext
 from saas_billing.services.errors import Conflict, DomainError, NotFound
 from saas_billing.services.lifecycle import scheduled_change_payload
 from saas_billing.services.subscriptions import CHANGEABLE, validate_plan_change
@@ -182,3 +183,83 @@ def cancel_change(session: Session, change: ScheduledChange, now: datetime) -> S
         now,
     )
     return change
+
+
+# --- applying due changes (called by the billing run) ---------------------------------------
+
+
+def due_subscription_ids(as_of: datetime) -> Select:
+    """Subquery of subscriptions with a pending change due at `as_of`.
+
+    Period-end changes only come due for billable subscriptions: a paused subscription has no
+    running period, so its plan change waits until it is resumed and reaches its period end.
+    """
+    return (
+        select(ScheduledChange.subscription_id)
+        .join(Subscription, Subscription.id == ScheduledChange.subscription_id)
+        .where(
+            ScheduledChange.status == PENDING,
+            or_(
+                and_(
+                    ScheduledChange.scheduled_for.is_not(None),
+                    ScheduledChange.scheduled_for <= as_of,
+                ),
+                and_(
+                    ScheduledChange.scheduled_for.is_(None),
+                    Subscription.status.in_(list(BILLABLE)),
+                    Subscription.current_period_end <= as_of,
+                ),
+            ),
+        )
+    )
+
+
+def next_due_change(session: Session, sub: Subscription, as_of: datetime) -> ScheduledChange | None:
+    """The earliest pending change of `sub` that is due at `as_of` (ties: oldest first)."""
+    due = [
+        change
+        for change in pending_changes(session, sub)
+        if (not change.at_period_end or sub.status in BILLABLE) and change.effective_at <= as_of
+    ]
+    return min(due, key=lambda c: c.effective_at, default=None)
+
+
+def apply_change(session: Session, ctx: BillingContext, change: ScheduledChange) -> str:
+    """Apply `change` at its effective instant; return a label for the run's transition counts.
+
+    A change that is no longer valid (plan retired, subscription past due when a pause was
+    due, ...) is marked `failed` with the reason instead of stopping the billing run.
+    """
+    sub = change.subscription
+    at = change.effective_at
+    on_boundary = sub.status in BILLABLE and at == sub.current_period_end
+    reason = f"scheduled_{change.action.value}"
+    try:
+        if change.action is A.PAUSE:
+            subscriptions.pause(session, sub, at, reason=reason)
+        elif change.action is A.RESUME:
+            subscriptions.resume(session, sub, at, reason=reason)
+        elif change.action is A.CHANGE_PLAN:
+            plan = session.get(Plan, change.plan_id)
+            if on_boundary:
+                subscriptions.switch_at_period_end(
+                    session, sub, at, new_plan=plan, seats=change.seats, reason=reason
+                )
+            else:
+                subscriptions.change_plan(session, ctx, sub, plan, at, seats=change.seats)
+        elif on_boundary:
+            subscriptions.switch_at_period_end(session, sub, at, seats=change.seats, reason=reason)
+        else:
+            subscriptions.change_seats(session, ctx, sub, change.seats, at)
+    except (DomainError, InvalidTransition) as exc:
+        change.status = ScheduledChangeStatus.FAILED
+        change.failure_reason = str(exc)[:300]
+        change.updated_at = at
+        session.flush()
+        webhooks.emit(session, "subscription.change_failed", scheduled_change_payload(change), at)
+        return "scheduled_change_failed"
+    change.status = ScheduledChangeStatus.APPLIED
+    change.applied_at = at
+    change.updated_at = at
+    session.flush()
+    return reason
