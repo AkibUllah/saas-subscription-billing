@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
@@ -202,6 +203,73 @@ class SubscriptionEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(index=True)
 
     subscription: Mapped[Subscription] = relationship(back_populates="events")
+
+
+class ScheduledAction(str, Enum):
+    PAUSE = "pause"
+    RESUME = "resume"
+    CHANGE_PLAN = "change_plan"
+    CHANGE_SEATS = "change_seats"
+
+
+class ScheduledChangeStatus(str, Enum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    CANCELED = "canceled"
+    FAILED = "failed"
+
+
+class ScheduledChange(Base):
+    """A pause, resume, plan or seat change that the billing run applies later.
+
+    `scheduled_for` is an explicit instant; NULL means "at the end of the current period",
+    resolved against the subscription when the change is due, so a pause or an interval change
+    that moves the period end also moves the change with it.
+    """
+
+    __tablename__ = "scheduled_changes"
+    __table_args__ = (
+        # At most one pending change per action and subscription; the service checks first and
+        # the partial unique index catches races.
+        Index(
+            "uq_scheduled_changes_pending_action",
+            "subscription_id",
+            "action",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sch"))
+    subscription_id: Mapped[str] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True
+    )
+    action: Mapped[ScheduledAction] = mapped_column(enum_column(ScheduledAction, 15))
+    status: Mapped[ScheduledChangeStatus] = mapped_column(
+        enum_column(ScheduledChangeStatus, 10), index=True
+    )
+    plan_id: Mapped[str | None] = mapped_column(ForeignKey("plans.id"))
+    seats: Mapped[int | None] = mapped_column(Integer)
+    scheduled_for: Mapped[datetime | None] = mapped_column(index=True)
+    applied_at: Mapped[datetime | None]
+    canceled_at: Mapped[datetime | None]
+    failure_reason: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+    subscription: Mapped[Subscription] = relationship(lazy="joined")
+
+    @property
+    def at_period_end(self) -> bool:
+        return self.scheduled_for is None
+
+    @property
+    def effective_at(self) -> datetime:
+        """When the change takes effect, as far as it is known now."""
+        if self.scheduled_for is not None:
+            return self.scheduled_for
+        return self.subscription.current_period_end
 
 
 class UsageRecord(Base):
