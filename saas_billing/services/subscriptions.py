@@ -279,6 +279,19 @@ def change_seats(
     return None
 
 
+def validate_plan_change(sub: Subscription, new_plan: Plan, seats: int | None) -> int:
+    """Check that `sub` may move to `new_plan`; return the seat count it would end up with."""
+    _require_changeable(sub)
+    if not new_plan.active:
+        raise DomainError(f"plan {new_plan.code} is not active", code="plan_inactive")
+    if new_plan.currency != sub.plan.currency:
+        raise DomainError("cannot change to a plan in another currency", code="currency_mismatch")
+    new_seats = sub.seats if seats is None else seats
+    if new_seats < 1:
+        raise DomainError("seats must be >= 1")
+    return new_seats
+
+
 def change_plan(
     session: Session,
     ctx: BillingContext,
@@ -289,14 +302,7 @@ def change_plan(
     seats: int | None = None,
     invoice_now: bool = False,
 ) -> Invoice | None:
-    _require_changeable(sub)
-    if not new_plan.active:
-        raise DomainError(f"plan {new_plan.code} is not active", code="plan_inactive")
-    if new_plan.currency != sub.plan.currency:
-        raise DomainError("cannot change to a plan in another currency", code="currency_mismatch")
-    new_seats = sub.seats if seats is None else seats
-    if new_seats < 1:
-        raise DomainError("seats must be >= 1")
+    new_seats = validate_plan_change(sub, new_plan, seats)
     old_plan = sub.plan
     if new_plan.id == old_plan.id and new_seats == sub.seats:
         return None
@@ -394,21 +400,27 @@ def change_plan(
     return invoice
 
 
-def pause(session: Session, sub: Subscription, now: datetime) -> Subscription:
+def pause(
+    session: Session, sub: Subscription, now: datetime, *, reason: str = "paused"
+) -> Subscription:
     if sub.status is not S.ACTIVE:
         raise DomainError("only active subscriptions can be paused", code="not_active")
     sub.paused_at = now
-    transition(session, sub, S.PAUSED, now, reason="paused")
+    transition(session, sub, S.PAUSED, now, reason=reason)
     return sub
 
 
-def resume(session: Session, sub: Subscription, now: datetime) -> Subscription:
+def resume(
+    session: Session, sub: Subscription, now: datetime, *, reason: str = "resumed"
+) -> Subscription:
+    """Unfreeze billing. The time that was left in the period when it was paused is kept, so a
+    subscription paused exactly at its period end starts a fresh period on resume."""
     if sub.status is not S.PAUSED or sub.paused_at is None:
         raise DomainError("subscription is not paused", code="not_paused")
     remaining = sub.current_period_end - sub.paused_at
     sub.current_period_end = now + max(remaining, timedelta(0))
     sub.paused_at = None
-    transition(session, sub, S.ACTIVE, now, reason="resumed")
+    transition(session, sub, S.ACTIVE, now, reason=reason)
     return sub
 
 
