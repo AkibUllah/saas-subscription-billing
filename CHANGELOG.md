@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Scheduled subscription changes (#4): `pause`, `resume`, `change_plan` and `change_seats` at the period end or at a given instant, via `POST|GET /v1/subscriptions/{id}/scheduled-changes` and `DELETE …/scheduled-changes/{change_id}`. The billing run applies due changes before invoicing: plan and seat changes on the boundary bill the next period on the new values without proration, mid-period ones are prorated; paused subscriptions are not invoiced and a resume after a period-end pause starts a fresh period. One pending change per action, conflicts rejected with `409`, invalid changes marked `failed`, `subscription.change_scheduled|change_canceled|change_failed` webhooks.
+- Alembic migration `0002` adding the `scheduled_changes` table.
 - CodeQL code scanning workflow and Dependabot configuration (pip, Docker, GitHub Actions).
 - API reference and terminal screenshots in the README.
 - Roadmap tracked as GitHub issues under the `v0.2.0` milestone.
 
 ### Changed
 
+- Canceling a subscription also cancels its pending scheduled changes.
 - CI workflow runs with a read-only `GITHUB_TOKEN` by default.
 
 ## [0.1.0] - 2026-10-25
