@@ -8,7 +8,12 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from saas_billing.core.coupons import CouponDuration, CouponKind
 from saas_billing.core.periods import Interval
 from saas_billing.core.states import SubscriptionStatus
-from saas_billing.models import InvoiceStatus, LineType
+from saas_billing.models import (
+    InvoiceStatus,
+    LineType,
+    ScheduledAction,
+    ScheduledChangeStatus,
+)
 
 
 class ORMModel(BaseModel):
@@ -186,6 +191,36 @@ class ChangeSeatsRequest(BaseModel):
 class CancelRequest(BaseModel):
     at_period_end: bool = True
     credit_unused: bool = False
+
+
+class ScheduledChangeCreate(BaseModel):
+    action: ScheduledAction
+    effective_at: datetime | None = Field(
+        default=None,
+        description="When to apply the change; omit to apply it at the end of the current period",
+    )
+    plan_id: str | None = Field(default=None, description="Plan id or code (change_plan only)")
+    seats: int | None = Field(
+        default=None, ge=1, le=10_000, description="change_seats, or seats for change_plan"
+    )
+
+
+class ScheduledChangeOut(ORMModel):
+    id: str
+    subscription_id: str
+    action: ScheduledAction
+    status: ScheduledChangeStatus
+    plan_id: str | None
+    seats: int | None
+    at_period_end: bool
+    effective_at: datetime = Field(
+        description="Resolved instant; for period-end changes this follows the period end"
+    )
+    applied_at: datetime | None
+    canceled_at: datetime | None
+    failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class UsageCreate(BaseModel):
