@@ -4,6 +4,11 @@ Idempotency comes from state, not from bookkeeping: a subscription is only due w
 `current_period_end <= as_of`, and rolling it over advances the period in the same
 transaction that creates the invoice. Running twice for the same `as_of` finds nothing to do.
 The unique `invoices.period_key` is the backstop if two runs ever race.
+
+Scheduled changes are applied in time order inside the same per-subscription loop, before the
+rollover they precede: a change due at the period end lands before the next period is
+invoiced, and a change due mid-period is applied at its own instant (with proration). Applying
+a change flips it out of `pending` in the same transaction, so it also never runs twice.
 """
 
 from __future__ import annotations
@@ -12,13 +17,13 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from saas_billing.core.periods import next_period_end
 from saas_billing.core.states import BILLABLE, SubscriptionStatus
 from saas_billing.models import BillingRun, Invoice, InvoiceStatus, Subscription
-from saas_billing.services import invoicing, payments, webhooks
+from saas_billing.services import invoicing, payments, scheduled_changes, webhooks
 from saas_billing.services.context import BillingContext
 from saas_billing.services.lifecycle import transition
 from saas_billing.services.subscriptions import issue_period_invoice
@@ -33,7 +38,11 @@ def due_subscriptions(session: Session, as_of: datetime) -> list[Subscription]:
         session.scalars(
             select(Subscription)
             .where(
-                Subscription.status.in_(list(BILLABLE)), Subscription.current_period_end <= as_of
+                or_(
+                    (Subscription.status.in_(list(BILLABLE)))
+                    & (Subscription.current_period_end <= as_of),
+                    Subscription.id.in_(scheduled_changes.due_subscription_ids(as_of)),
+                )
             )
             .order_by(Subscription.current_period_end, Subscription.id)
         )
@@ -63,11 +72,20 @@ def process_subscription(
     transitions: Counter,
 ) -> None:
     rollovers = 0
-    while (
-        sub.status in BILLABLE
-        and sub.current_period_end <= as_of
-        and rollovers < MAX_ROLLOVERS_PER_SUBSCRIPTION
-    ):
+    while rollovers < MAX_ROLLOVERS_PER_SUBSCRIPTION:
+        boundary = sub.current_period_end if sub.status in BILLABLE else None
+        change = scheduled_changes.next_due_change(session, sub, as_of)
+        if change is not None and (
+            boundary is None
+            or change.effective_at < boundary
+            # On the boundary itself a pending cancellation wins; the change is then dropped.
+            or (change.effective_at == boundary and not sub.cancel_at_period_end)
+        ):
+            outcome = scheduled_changes.apply_change(session, ctx, change)
+            transitions[outcome] += 1
+            continue
+        if boundary is None or boundary > as_of:
+            break
         rollovers += 1
         ended = (sub.current_period_start, sub.current_period_end)
         period_end = sub.current_period_end

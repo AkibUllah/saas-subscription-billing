@@ -406,6 +406,46 @@ def change_plan(
     return invoice
 
 
+def switch_at_period_end(
+    session: Session,
+    sub: Subscription,
+    now: datetime,
+    *,
+    new_plan: Plan | None = None,
+    seats: int | None = None,
+    reason: str,
+) -> Subscription:
+    """Swap plan and/or seats exactly on a period boundary.
+
+    Nothing of the ending period is left to credit or charge, so no proration lines are
+    written: the next period invoice is simply built from the new plan and seat count. An
+    interval change (monthly -> yearly) needs no anchor reset either, because the rollover
+    computes the new period end from the new plan.
+    """
+    if new_plan is not None:
+        new_seats = validate_plan_change(sub, new_plan, seats)
+    else:
+        _require_changeable(sub)
+        new_seats = sub.seats if seats is None else seats
+        if new_seats < 1:
+            raise DomainError("seats must be >= 1")
+    old_plan, old_seats = sub.plan, sub.seats
+    if new_plan is not None:
+        sub.plan = new_plan
+        sub.plan_id = new_plan.id
+    sub.seats = new_seats
+    sub.updated_at = now
+    session.flush()
+    webhooks.emit(
+        session,
+        "subscription.updated",
+        subscription_payload(sub)
+        | {"previous_plan_id": old_plan.id, "previous_seats": old_seats, "reason": reason},
+        now,
+    )
+    return sub
+
+
 def pause(
     session: Session, sub: Subscription, now: datetime, *, reason: str = "paused"
 ) -> Subscription:
