@@ -37,6 +37,7 @@ Every SaaS product I have helped ship eventually hit the same wall: the first "b
 
 - Customers, plans (monthly / yearly, flat + per-seat with included seats, metered add-ons with included units), coupons (percent / fixed; once / repeating / forever; redemption caps) and trials
 - Subscription lifecycle `TRIALING → ACTIVE → PAST_DUE → (CANCELED | UNPAID)` plus pause/resume, enforced by an explicit transition table; every change is recorded as a status event
+- Scheduled pauses, resumes, plan and seat changes, at the period end or at a given instant, applied by the billing run before it invoices; at most one pending change per action, conflicts rejected with `409`
 - Mid-cycle plan upgrades/downgrades and seat changes prorated on exact elapsed seconds; prorations accumulate as pending lines for the next invoice or are invoiced immediately (`invoice_now`); interval changes (monthly → yearly) reset the billing anchor
 - Period invoices with plan, seat, usage, proration, coupon, customer-credit and VAT (15% BD default) lines; yearly invoice numbering (`INV-2026-000042`); JSON and HTML (Jinja2) renderings
 - `PaymentGateway` protocol with a deterministic `MockGateway` (behaviour chosen by card token) and clearly labelled `StripeLikeGateway` / `BkashLikeGateway` stubs
@@ -74,7 +75,49 @@ Design notes:
 - **Idempotency comes from state.** A subscription is due while `current_period_end <= as_of`; the rollover advances the period in the same transaction that creates the invoice. The unique `invoices.period_key` (`<subscription>:<period_start>`) is the backstop if two runs ever race.
 - **Invoices are built from lines.** Recurring lines for the period starting, usage lines for the period that ended, pending proration lines, then coupon, customer credit and VAT. Nothing on an invoice is a derived number without a line behind it.
 - **Lifecycle is a table, not ifs.** `core.states.TRANSITIONS` is the single source of truth; the API turns an `InvalidTransition` into a `409`.
+- **Scheduled changes ride the billing run.** Due changes and period rollovers are processed in time order in one per-subscription loop, so a change dated mid-period is applied (and prorated) at its own instant even when the run is catching up on several periods.
 - **Dunning is relative to issue date,** not to the previous attempt, so catching up on a late run does not compress the schedule.
+
+## Subscription lifecycle
+
+| From | To |
+| --- | --- |
+| `trialing` | `active`, `past_due`, `canceled` |
+| `active` | `past_due`, `paused`, `canceled` |
+| `past_due` | `active`, `canceled`, `unpaid` |
+| `paused` | `active`, `canceled` |
+| `unpaid` | `active`, `canceled` |
+
+(`core.states.TRANSITIONS`; only `trialing`, `active` and `past_due` are rolled over and invoiced.)
+
+Pause, resume, plan and seat changes act immediately through their own endpoints, or can be scheduled with `POST /v1/subscriptions/{id}/scheduled-changes`:
+
+| `action` | Payload | Applied when due |
+| --- | --- | --- |
+| `change_plan` | `plan_id`, optional `seats` | On the period boundary: plan swapped, next period invoiced on the new plan with **no proration lines** (an interval change simply starts a period of the new length). Mid-period: same as `change-plan`, prorated at the effective instant. |
+| `change_seats` | `seats` | Same rule: no proration on the boundary, prorated mid-period. |
+| `pause` | – | Status becomes `paused`; a paused subscription is never rolled over or invoiced. |
+| `resume` | – (needs `effective_at`) | Status back to `active`. A subscription paused at its period end has no time left, so the resume starts a fresh period and invoices it at the resume instant; a mid-period pause keeps its unused time. |
+
+Rules:
+
+- `effective_at` omitted means "at the end of the current period"; it follows the period end if a pause or an interval change moves it. An explicit `effective_at` must be in the future.
+- One pending change per action and subscription (`change_already_scheduled`), enforced by a partial unique index as well. `change_plan` and `change_seats` are mutually exclusive (`conflicting_change`); `resume` needs the subscription to be paused or a pending `pause` that takes effect earlier.
+- Nothing can be scheduled on a subscription that is set to cancel at period end; if a cancellation is scheduled later, it wins on the boundary. Canceling a subscription cancels its pending changes.
+- A change that is no longer valid when it comes due (plan retired, pause on a `past_due` subscription) is marked `failed` with a `failure_reason`; the billing run carries on. Applied, canceled and failed changes stay listed for the audit trail, and each application adds a status event (`scheduled_pause`, `scheduled_resume`) or a `subscription.updated` webhook with `reason: scheduled_change_plan`.
+- Idempotent like the rest of the run: applying a change moves it out of `pending` in the same transaction as its effect.
+
+```bash
+# Downgrade to Starter at renewal, then pause from 10 March to 1 April
+curl -s -X POST localhost:8000/v1/subscriptions/sub_…/scheduled-changes "${H[@]}" \
+  -d '{"action":"change_plan","plan_id":"starter"}'
+curl -s -X POST localhost:8000/v1/subscriptions/sub_…/scheduled-changes "${H[@]}" \
+  -d '{"action":"pause","effective_at":"2026-03-10T00:00:00Z"}'
+curl -s -X POST localhost:8000/v1/subscriptions/sub_…/scheduled-changes "${H[@]}" \
+  -d '{"action":"resume","effective_at":"2026-04-01T00:00:00Z"}'
+curl -s "localhost:8000/v1/subscriptions/sub_…/scheduled-changes?status=pending" "${H[@]}"
+curl -s -X DELETE localhost:8000/v1/subscriptions/sub_…/scheduled-changes/sch_… "${H[@]}"
+```
 
 ## Tech Stack
 
@@ -182,6 +225,8 @@ All `/v1` routes require `X-API-Key` when `API_KEY` is set. Errors are `{"error"
 | `POST` | `/v1/subscriptions/{id}/pause` · `/resume` | Freeze billing; resume shifts the period end by the paused time |
 | `POST` | `/v1/subscriptions/{id}/cancel` | `{at_period_end: true}` (default) or immediately with optional `credit_unused` |
 | `POST` | `/v1/subscriptions/{id}/reactivate` | Revoke a scheduled cancellation |
+| `POST` · `GET` | `/v1/subscriptions/{id}/scheduled-changes` | Schedule `{action, effective_at?, plan_id?, seats?}`; list with optional `status` filter |
+| `DELETE` | `/v1/subscriptions/{id}/scheduled-changes/{change_id}` | Cancel a pending change (kept as `canceled`) |
 | `POST` | `/v1/subscriptions/{id}/usage` | Metered usage with `idempotency_key` |
 | `GET` | `/v1/invoices` · `/{id_or_number}` · `/{id}/html` | Filter by customer / subscription / status; HTML rendering |
 | `POST` | `/v1/invoices/{id}/pay` | Retry collection now (after a card update); reactivates an `UNPAID` subscription |
@@ -191,7 +236,7 @@ All `/v1` routes require `X-API-Key` when `API_KEY` is set. Errors are `{"error"
 | `GET` | `/v1/webhooks/events` | Events with delivery status; `POST /v1/webhooks/dispatch` sends pending |
 | `GET` | `/health` | DB check, gateway name, current clock |
 
-Webhook events: `customer.created`, `subscription.created|updated|paused|canceled|unpaid`, `invoice.created|paid|payment_failed|uncollectible`. Verify on the receiving side with `saas_billing.core.signing.verify(secret, body, header, now)`.
+Webhook events: `customer.created`, `subscription.created|updated|paused|canceled|unpaid`, `subscription.change_scheduled|change_canceled|change_failed`, `invoice.created|paid|payment_failed|uncollectible`. Verify on the receiving side with `saas_billing.core.signing.verify(secret, body, header, now)`.
 
 Mock gateway tokens: `tok_ok`, `tok_decline`, `tok_insufficient`, `tok_fail_then_ok:<n>`.
 
@@ -212,6 +257,7 @@ saas_billing/
 ├── gateways/               # PaymentGateway protocol, MockGateway, StripeLike/BkashLike stubs
 ├── services/
 │   ├── subscriptions.py    # create, change plan/seats, pause/resume, cancel, usage
+│   ├── scheduled_changes.py # schedule / cancel / apply pause, resume, plan and seat changes
 │   ├── invoicing.py        # line builders, finalize_invoice, numbering, HTML render
 │   ├── payments.py         # collect + dunning
 │   ├── billing_run.py      # the idempotent run
@@ -219,9 +265,9 @@ saas_billing/
 │   ├── webhooks.py · lifecycle.py · customers.py · plans.py · context.py
 ├── api/                    # routers per resource
 └── templates/invoice.html
-alembic/                    # env.py + versions/0001_initial_schema.py
+alembic/                    # env.py + versions/0001_initial_schema.py, 0002_scheduled_changes.py
 scripts/simulate.py         # the 3-month simulation above
-tests/                      # 81 tests, in-memory SQLite, FixedClock, MockGateway, MockTransport
+tests/                      # 112 tests, in-memory SQLite, FixedClock, MockGateway, MockTransport
 ```
 
 ## Testing
@@ -232,14 +278,13 @@ make cov         # with coverage (93% at the time of writing)
 make lint        # ruff check + format check
 ```
 
-Covered: money rounding and month arithmetic (31 Jan + 1 month, leap years); proration at exact midpoints and the credit/charge pair sharing one fraction; coupon durations across successive invoices (once / repeating / forever, yearly plans); the dunning schedule walked day by day to `UNPAID` and recovery mid-schedule; every valid and invalid lifecycle transition; trial conversion on the billing run; seat and plan changes (pending vs. immediate invoices, trial no-ops, interval reset); pause/resume period shifting; cancel at period end with a final usage invoice; immediate cancel voiding open invoices and crediting unused time; idempotent and catch-up billing runs; invoice numbering per year; VAT and tax exemption; customer credit application; metered usage attribution to the right period; MRR/ARR/churn/trial metrics; the HTTP API including auth, error envelopes, HTML invoices and signed webhook delivery with retries; gateway stubs over `httpx.MockTransport`; and that `alembic upgrade head` produces exactly the model schema.
+Covered: money rounding and month arithmetic (31 Jan + 1 month, leap years); proration at exact midpoints and the credit/charge pair sharing one fraction; coupon durations across successive invoices (once / repeating / forever, yearly plans); the dunning schedule walked day by day to `UNPAID` and recovery mid-schedule; every valid and invalid lifecycle transition; trial conversion on the billing run; seat and plan changes (pending vs. immediate invoices, trial no-ops, interval reset); pause/resume period shifting; scheduled plan, seat, pause and resume changes on and between period boundaries (no proration at period end, proration mid-period, catch-up runs, trial conversion onto the new plan, conflicts, failures and cancellations); cancel at period end with a final usage invoice; immediate cancel voiding open invoices and crediting unused time; idempotent and catch-up billing runs; invoice numbering per year; VAT and tax exemption; customer credit application; metered usage attribution to the right period; MRR/ARR/churn/trial metrics; the HTTP API including auth, error envelopes, HTML invoices and signed webhook delivery with retries; gateway stubs over `httpx.MockTransport`; and that `alembic upgrade head` produces exactly the model schema.
 
 ## Roadmap
 
 - [ ] Row-level locking (`SELECT … FOR UPDATE SKIP LOCKED`) so several billing workers can share one PostgreSQL queue (#1)
 - [ ] Per-customer tax profiles (VAT registration number, reverse charge) instead of one global rate (#2)
 - [ ] Refunds as first-class objects with gateway calls, instead of credit-balance adjustments only (#3)
-- [ ] Scheduled pauses/resumes and scheduled plan changes at period end (#4)
 - [ ] PDF invoices (the HTML template is print-ready; wiring WeasyPrint is the remaining step) (#5)
 
 ## License
